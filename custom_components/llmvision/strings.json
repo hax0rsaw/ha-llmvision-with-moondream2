@@ -1,3 +1,4 @@
+// strings.json
 {
     "config": {
         "step": {
@@ -80,6 +81,15 @@
                     "groq_default_model": "Default model",
                     "groq_default_temperature": "Temperature",
                     "groq_default_top_p": "Top P"
+                }
+            },
+            "moondream": {
+                "title": "Configure Moondream",
+                "description": "Provide a valid Moondream API key. Note: Moondream only supports one image per call, so you can choose which image to send when multiple images are provided.",
+                "data": {
+                    "api_key": "API key",
+                    "default_model": "Default model",
+                    "moondream_image_selection": "Image selection when multiple images available"
                 }
             },
             "custom_openai": {
