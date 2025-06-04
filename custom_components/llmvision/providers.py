@@ -1,3 +1,4 @@
+# providers.py
 from abc import ABC, abstractmethod
 import boto3
 from homeassistant.exceptions import ServiceValidationError
@@ -81,34 +82,50 @@ class Request:
     def get_provider(hass, provider_uid):
         """Translate UID of the config entry into provider name"""
         if DOMAIN not in hass.data:
+            _LOGGER.error(f"Domain {DOMAIN} not found in hass.data")
             return None
 
         entry_data = hass.data[DOMAIN].get(provider_uid)
         if not entry_data:
+            _LOGGER.error(f"No entry data found for provider_uid: {provider_uid}")
+            _LOGGER.debug(f"Available entries: {list(hass.data[DOMAIN].keys())}")
             return None
 
-        # Check provider field first
+        _LOGGER.debug(f"Entry data for {provider_uid}: {entry_data}")
+
+        # Check provider field first (new method)
         provider = entry_data.get("provider")
         if provider:
+            _LOGGER.debug(f"Found provider field: {provider}")
             return provider
             
         # Fallback to checking specific config fields for older versions
-        if CONF_API_KEY in entry_data:
-            # Check which provider based on other config fields
-            if CONF_AZURE_BASE_URL in entry_data:
-                return "Azure"
-            elif CONF_CUSTOM_OPENAI_ENDPOINT in entry_data:
-                return "Custom OpenAI"
-            elif CONF_AWS_ACCESS_KEY_ID in entry_data:
-                return "AWS Bedrock"
-            elif CONF_MOONDREAM_IMAGE_SELECTION in entry_data:
-                return "Moondream"
-            else:
-                return "OpenAI"  # Default fallback
+        # Check for unique identifying fields for each provider
+        if CONF_AZURE_BASE_URL in entry_data:
+            return "Azure"
+        elif CONF_CUSTOM_OPENAI_ENDPOINT in entry_data:
+            return "Custom OpenAI"
+        elif CONF_AWS_ACCESS_KEY_ID in entry_data:
+            return "AWS Bedrock"
+        elif CONF_MOONDREAM_IMAGE_SELECTION in entry_data:
+            return "Moondream"
         elif "ip_address" in entry_data:
-            if "port" in entry_data:
-                return "LocalAI"  # or "Ollama" - would need more logic to distinguish
+            # For LocalAI and Ollama, we need to check more carefully
+            # Look at the port to distinguish them (common defaults)
+            port = entry_data.get("port", 0)
+            if port == 11434:
+                return "Ollama"
+            elif port == 8080:
+                return "LocalAI"
+            else:
+                # Fallback - check if we have any other clues
+                return "Ollama"  # Most common for IP-based configs
+        elif CONF_API_KEY in entry_data:
+            # For API key-based providers, we need to be more specific
+            # Check for other distinguishing fields or use defaults
+            return "OpenAI"  # Default fallback for API key providers
         
+        _LOGGER.error(f"Could not determine provider for entry data: {entry_data}")
         return None
     
     @staticmethod
@@ -184,6 +201,9 @@ class Request:
         config = self.hass.data.get(DOMAIN).get(entry_id)
 
         provider = Request.get_provider(self.hass, entry_id)
+        _LOGGER.debug(f"Detected provider: {provider} for entry_id: {entry_id}")
+        _LOGGER.debug(f"Config data: {config}")
+        
         call.base64_images = self.base64_images
         call.filenames = self.filenames
         call.ssim_scores = self.ssim_scores  # Pass SSIM scores to call
@@ -229,30 +249,28 @@ class Request:
             port = config.get('port')
             https = config.get('https', False)
 
-            provider_instance = LocalAI(self.hass, endpoint={
+            provider_instance = LocalAI(self.hass, api_key="", model=call.model, endpoint={
                 'ip_address': ip_address,
                 'port': port,
                 'https': https
-            },
-                model=call.model)
+            })
 
         elif provider == 'Ollama':
             ip_address = config.get('ip_address')
             port = config.get('port')
             https = config.get('https', False)
 
-            provider_instance = Ollama(self.hass, endpoint={
+            provider_instance = Ollama(self.hass, api_key="", model=call.model, endpoint={
                 'ip_address': ip_address,
                 'port': port,
                 'https': https
-            },
-            model=call.model)
+            })
 
         elif provider == 'Custom OpenAI':
             api_key = config.get(CONF_API_KEY)
             endpoint = config.get(CONF_CUSTOM_OPENAI_ENDPOINT)
             provider_instance = OpenAI(
-                self.hass, api_key=api_key, endpoint={'base_url': endpoint}, model=call.model)
+                self.hass, api_key=api_key, model=call.model, endpoint={'base_url': endpoint})
 
         elif provider == 'AWS Bedrock':
             provider_instance = AWSBedrock(self.hass,
@@ -278,7 +296,7 @@ class Request:
             )
 
             provider_instance = OpenAI(
-                self.hass, api_key=api_key, endpoint={'base_url': endpoint}, model=call.model)
+                self.hass, api_key=api_key, model=call.model, endpoint={'base_url': endpoint})
 
         elif provider == 'Moondream':
             api_key = config.get(CONF_API_KEY)
@@ -436,7 +454,7 @@ class Moondream(Provider):
     def _generate_headers(self) -> dict:
         return {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {self.api_key}'
+            'X-Moondream-Auth': self.api_key  # Moondream uses X-Moondream-Auth instead of Authorization Bearer
         }
 
     def _select_image(self, call):
@@ -515,7 +533,14 @@ class Moondream(Provider):
             "question": "Test",
             "stream": False
         }
-        await self._post(url=ENDPOINT_MOONDREAM, headers=headers, data=data)
+        try:
+            await self._post(url=ENDPOINT_MOONDREAM, headers=headers, data=data)
+        except ServiceValidationError as e:
+            # Provide more specific error message for auth issues
+            if "authorization" in str(e).lower() or "missing" in str(e).lower():
+                raise ServiceValidationError("Invalid API key - check your Moondream API key")
+            else:
+                raise e
 
 
 class OpenAI(Provider):
@@ -736,7 +761,8 @@ class Anthropic(Provider):
 
 class Google(Provider):
     def __init__(self, hass, api_key="", endpoint={'base_url': ENDPOINT_GOOGLE, 'model': DEFAULT_GOOGLE_MODEL}):
-        super().__init__(hass, api_key, endpoint)
+        super().__init__(hass, api_key, endpoint.get('model', DEFAULT_GOOGLE_MODEL))
+        self.endpoint = endpoint
         self.default_model = endpoint['model']
 
     def _generate_headers(self) -> dict:
