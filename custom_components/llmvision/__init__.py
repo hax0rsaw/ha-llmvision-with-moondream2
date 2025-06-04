@@ -1,3 +1,4 @@
+# __init__.py
 from datetime import datetime
 
 # Declare variables
@@ -10,11 +11,12 @@ from .const import (
     CONF_HTTPS,
     CONF_DEFAULT_MODEL,
     CONF_TEMPERATURE,
-    CONF_DEFAULT_TOP_P,
+    CONF_TOP_P,
     CONF_AZURE_VERSION,
     CONF_AZURE_BASE_URL,
     CONF_AZURE_DEPLOYMENT,
     CONF_CUSTOM_OPENAI_ENDPOINT,
+    CONF_MOONDREAM_IMAGE_SELECTION,
     CONF_RETENTION_TIME,
     CONF_MEMORY_PATHS,
     CONG_MEMORY_IMAGES_ENCODED,
@@ -74,7 +76,7 @@ async def async_setup_entry(hass, entry):
     https = entry.data.get(CONF_HTTPS)
     default_model = entry.data.get(CONF_DEFAULT_MODEL)
     default_temperature = entry.data.get(CONF_TEMPERATURE)
-    default_top_p = entry.data.get(CONF_DEFAULT_TOP_P)
+    default_top_p = entry.data.get(CONF_TOP_P)
 
     # Azure specific
     azure_base_url = entry.data.get(CONF_AZURE_BASE_URL)
@@ -88,6 +90,9 @@ async def async_setup_entry(hass, entry):
     aws_access_key_id = entry.data.get(CONF_AWS_ACCESS_KEY_ID)
     aws_secret_access_key = entry.data.get(CONF_AWS_SECRET_ACCESS_KEY)
     aws_region_name = entry.data.get(CONF_AWS_REGION_NAME)
+    
+    # Moondream specific
+    moondream_image_selection = entry.data.get(CONF_MOONDREAM_IMAGE_SELECTION)
     
     # Timeline
     retention_time = entry.data.get(CONF_RETENTION_TIME)
@@ -105,14 +110,14 @@ async def async_setup_entry(hass, entry):
 
     # Create a dictionary for the entry data
     entry_data = {
-        CONF_PROVIDER: provider,
-        CONF_API_KEY: api_key,
-        CONF_IP_ADDRESS: ip_address,
-        CONF_PORT: port,
-        CONF_HTTPS: https,
+        "provider": provider,  # Keep this as string for new entries
+        CONF_API_KEY: api_key,  # Keep using constants for consistency
+        "ip_address": ip_address,  # These are fine as strings since they're not in const.py
+        "port": port,
+        "https": https,
         CONF_DEFAULT_MODEL: default_model,
         CONF_TEMPERATURE: default_temperature,
-        CONF_DEFAULT_TOP_P: default_top_p,
+        CONF_TOP_P: default_top_p,
         CONF_AZURE_BASE_URL: azure_base_url,
         CONF_AZURE_DEPLOYMENT: azure_deployment,
         CONF_AZURE_VERSION: azure_version,
@@ -120,6 +125,7 @@ async def async_setup_entry(hass, entry):
         CONF_AWS_ACCESS_KEY_ID: aws_access_key_id,
         CONF_AWS_SECRET_ACCESS_KEY: aws_secret_access_key,
         CONF_AWS_REGION_NAME: aws_region_name,
+        CONF_MOONDREAM_IMAGE_SELECTION: moondream_image_selection,
         CONF_RETENTION_TIME: retention_time,
         CONF_MEMORY_PATHS: memory_paths,
         CONG_MEMORY_IMAGES_ENCODED: memory_images_encoded,
@@ -196,13 +202,20 @@ async def async_migrate_entry(hass, config_entry: ConfigEntry) -> bool:
     if config_entry.version == 3:        
         new_data = config_entry.data.copy()
 
-        if config_entry.data.get(PROVIDER) is "OpenAI":
-            new_data[CONF_API_KEY] = new_data.pop("openai_api_key")
-            new_data[CONF_DEFAULT_MODEL] = DEFAULT_MODEL_OPENAI
-            new_data[CONF_TEMPERATURE] = DEFAULT_TEMPERATURE_OPENAI
-            new_data[CONF_DEFAULT_TOP_P] = DEFAULT_TOP_P_OPENAI
+        if config_entry.data.get("provider") == "OpenAI":
+            new_data[CONF_API_KEY] = new_data.pop("openai_api_key", new_data.get(CONF_API_KEY))
+            # Set defaults for new fields if they don't exist
+            if CONF_DEFAULT_MODEL not in new_data:
+                new_data[CONF_DEFAULT_MODEL] = "gpt-4o-mini"
+            if CONF_TEMPERATURE not in new_data:
+                new_data[CONF_TEMPERATURE] = 0.5
+            if CONF_TOP_P not in new_data:
+                new_data[CONF_TOP_P] = 0.9
         
-            
+        hass.config_entries.async_update_entry(
+            config_entry, data=new_data, version=4, minor_version=0
+        )
+        return True
     else:
         hass.config_entries.async_update_entry(
             config_entry, version=4, minor_version=0
