@@ -1,3 +1,4 @@
+# media_handlers.py
 import base64
 import io
 import os
@@ -308,9 +309,15 @@ class MediaProcessor:
             for image_entity in image_entities:
                 try:
                     base_url = get_url(self.hass)
-                    image_url = base_url + \
-                        self.hass.states.get(image_entity).attributes.get(
-                            'entity_picture')
+                    entity_state = self.hass.states.get(image_entity)
+                    if not entity_state:
+                        raise ServiceValidationError(f"Entity {image_entity} does not exist")
+                    
+                    entity_picture = entity_state.attributes.get('entity_picture')
+                    if not entity_picture:
+                        raise ServiceValidationError(f"Entity {image_entity} does not have an entity_picture attribute")
+                    
+                    image_url = base_url + entity_picture
                     image_data = await self._fetch(image_url)
 
                     # Skip frame if fetch failed
@@ -323,8 +330,7 @@ class MediaProcessor:
                     resized_image = await self.resize_image(target_width=target_width, image_data=image_data)
                     self.client.add_frame(
                         base64_image=resized_image,
-                        filename=self.hass.states.get(
-                            image_entity).attributes.get('friendly_name') if include_filename else "",
+                        filename=entity_state.attributes.get('friendly_name') if include_filename else "",
                         ssim_score=0.0  # Default SSIM score for single images
                     )
 
@@ -332,8 +338,10 @@ class MediaProcessor:
                         await self._expose_image("0", resized_image, str(uuid.uuid4())[:8])
 
                 except AttributeError as e:
-                    raise ServiceValidationError(
-                        f"Entity {image_entity} does not exist")
+                    raise ServiceValidationError(f"Entity {image_entity} does not exist")
+                except Exception as e:
+                    raise ServiceValidationError(f"Error processing {image_entity}: {e}")
+                    
         if image_paths:
             for image_path in image_paths:
                 try:
