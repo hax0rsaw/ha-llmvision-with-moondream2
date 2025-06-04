@@ -26,6 +26,7 @@ class MediaProcessor:
         self.client = client
         self.base64_images = []
         self.filenames = []
+        self.ssim_scores = []  # Add SSIM scores tracking for better image selection
         self.path = self.hass.config.path(f"www/{DOMAIN}")
         self.key_frame = ""
 
@@ -290,14 +291,15 @@ class MediaProcessor:
         selected_frames.sort(key=lambda x: x[0])
 
         # Add selected frames to client
-        for frame_name, frame_data, _ in selected_frames:
+        for frame_name, frame_data, ssim_score in selected_frames:
             resized_image = await self.resize_image(target_width=target_width, image_data=frame_data)
             if expose_images:
                 await self._expose_image(frame_name[-1], resized_image, uid=str(uuid.uuid4())[:8])
 
             self.client.add_frame(
                 base64_image=resized_image,
-                filename=frame_name
+                filename=frame_name,
+                ssim_score=ssim_score  # Pass SSIM score for Moondream selection
             )
 
     async def add_images(self, image_entities, image_paths, target_width, include_filename, expose_images):
@@ -322,7 +324,8 @@ class MediaProcessor:
                     self.client.add_frame(
                         base64_image=resized_image,
                         filename=self.hass.states.get(
-                            image_entity).attributes.get('friendly_name') if include_filename else ""
+                            image_entity).attributes.get('friendly_name') if include_filename else "",
+                        ssim_score=0.0  # Default SSIM score for single images
                     )
 
                     if expose_images:
@@ -338,12 +341,14 @@ class MediaProcessor:
                     if include_filename and os.path.exists(image_path):
                         self.client.add_frame(
                             base64_image=await self.resize_image(target_width=target_width, image_path=image_path),
-                            filename=image_path.split('/')[-1].split('.')[-2]
+                            filename=image_path.split('/')[-1].split('.')[-2],
+                            ssim_score=0.0  # Default SSIM score for single images
                         )
                     elif os.path.exists(image_path):
                         self.client.add_frame(
                             base64_image=await self.resize_image(target_width=target_width, image_path=image_path),
-                            filename=""
+                            filename="",
+                            ssim_score=0.0  # Default SSIM score for single images
                         )
                     if not os.path.exists(image_path):
                         raise ServiceValidationError(
@@ -469,11 +474,12 @@ class MediaProcessor:
                             await self._expose_image(frame_name, None, current_event_id[:8], frame_path)
 
                     # Add frames to client, sorted by frame number instead of SSIM score
-                    for counter, (frame_path, _) in enumerate(sorted(frames, key=lambda x: x[0]), start=1):
+                    for counter, (frame_path, ssim_score) in enumerate(sorted(frames, key=lambda x: x[0]), start=1):
                         resized_image = await self.resize_image(image_path=frame_path, target_width=target_width)
                         self.client.add_frame(
                             base64_image=resized_image,
-                            filename=f"{os.path.splitext(os.path.basename(video_path))[0]} (frame {counter})" if include_filename else f"Video frame {counter}"
+                            filename=f"{os.path.splitext(os.path.basename(video_path))[0]} (frame {counter})" if include_filename else f"Video frame {counter}",
+                            ssim_score=ssim_score  # Pass SSIM score for Moondream selection
                         )
 
                 else:
