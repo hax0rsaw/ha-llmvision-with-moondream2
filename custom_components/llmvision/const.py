@@ -1,3 +1,4 @@
+# const.py
 """ Constants for llmvision component"""
 
 # Global constants
@@ -25,6 +26,9 @@ CONF_AWS_REGION_NAME = 'aws_region_name'
 
 # Custom OpenAI specific
 CONF_CUSTOM_OPENAI_ENDPOINT = 'custom_openai_endpoint'
+
+# Moondream specific
+CONF_MOONDREAM_IMAGE_SELECTION = 'moondream_image_selection'
 
 # Timeline
 CONF_RETENTION_TIME = 'retention_time'
@@ -62,6 +66,7 @@ SENSOR_ENTITY = 'sensor_entity'
 # Error messages
 ERROR_NOT_CONFIGURED = "{provider} is not configured"
 ERROR_GROQ_MULTIPLE_IMAGES = "Groq does not support videos or streams"
+ERROR_MOONDREAM_MULTIPLE_IMAGES = "Moondream only supports one image per call"
 ERROR_NO_IMAGE_INPUT = "No image input provided"
 ERROR_HANDSHAKE_FAILED = "Connection could not be established"
 
@@ -85,7 +90,13 @@ DEFAULT_OLLAMA_MODEL = "gemma3:4b"
 DEFAULT_CUSTOM_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_AWS_MODEL = "us.amazon.nova-pro-v1:0"
 DEFAULT_OPENWEBUI_MODEL = "gemma3:4b"
+DEFAULT_MOONDREAM_MODEL = "moondream2"
 
+# Image Selection Options for Moondream
+MOONDREAM_IMAGE_SELECTION_FIRST = "first"
+MOONDREAM_IMAGE_SELECTION_LAST = "last"
+MOONDREAM_IMAGE_SELECTION_BEST = "best"
+DEFAULT_MOONDREAM_IMAGE_SELECTION = MOONDREAM_IMAGE_SELECTION_FIRST
 
 # API Endpoints
 ENDPOINT_OPENAI = "https://api.openai.com/v1/chat/completions"
@@ -96,3 +107,4 @@ ENDPOINT_LOCALAI = "{protocol}://{ip_address}:{port}/v1/chat/completions"
 ENDPOINT_OLLAMA = "{protocol}://{ip_address}:{port}/api/chat"
 ENDPOINT_OPENWEBUI = "{protocol}://{ip_address}:{port}/api/chat/completions"
 ENDPOINT_AZURE = "{base_url}openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+ENDPOINT_MOONDREAM = "https://api.moondream.ai/v1/query"
