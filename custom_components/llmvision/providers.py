@@ -10,32 +10,15 @@ import json
 import base64
 from .const import (
     DOMAIN,
-    CONF_OPENAI_API_KEY,
-    CONF_AZURE_API_KEY,
+    CONF_API_KEY,
     CONF_AZURE_BASE_URL,
     CONF_AZURE_DEPLOYMENT,
     CONF_AZURE_VERSION,
-    CONF_ANTHROPIC_API_KEY,
-    CONF_GOOGLE_API_KEY,
-    CONF_GOOGLE_DEFAULT_MODEL,
-    CONF_GROQ_API_KEY,
-    CONF_GROQ_DEFAULT_MODEL,
-    CONF_LOCALAI_IP_ADDRESS,
-    CONF_LOCALAI_PORT,
-    CONF_LOCALAI_HTTPS,
-    CONF_OLLAMA_IP_ADDRESS,
-    CONF_OLLAMA_PORT,
-    CONF_OLLAMA_HTTPS,
-    CONF_OLLAMA_DEFAULT_MODEL,
     CONF_CUSTOM_OPENAI_ENDPOINT,
-    CONF_CUSTOM_OPENAI_API_KEY,
     CONF_AWS_ACCESS_KEY_ID,
     CONF_AWS_SECRET_ACCESS_KEY,
     CONF_AWS_REGION_NAME,
-    CONF_OPENWEBUI_IP_ADDRESS,
-    CONF_OPENWEBUI_PORT,
-    CONF_OPENWEBUI_HTTPS,
-    CONF_OPENWEBUI_API_KEY,
+    CONF_MOONDREAM_IMAGE_SELECTION,
     VERSION_ANTHROPIC,
     ENDPOINT_OPENAI,
     ENDPOINT_AZURE,
@@ -45,8 +28,10 @@ from .const import (
     ENDPOINT_OLLAMA,
     ENDPOINT_OPENWEBUI,
     ENDPOINT_GROQ,
+    ENDPOINT_MOONDREAM,
     ERROR_NOT_CONFIGURED,
     ERROR_GROQ_MULTIPLE_IMAGES,
+    ERROR_MOONDREAM_MULTIPLE_IMAGES,
     ERROR_NO_IMAGE_INPUT, 
     DEFAULT_OPENAI_MODEL,
     DEFAULT_ANTHROPIC_MODEL,
@@ -58,7 +43,10 @@ from .const import (
     DEFAULT_CUSTOM_OPENAI_MODEL,
     DEFAULT_AWS_MODEL,
     DEFAULT_OPENWEBUI_MODEL,
-
+    DEFAULT_MOONDREAM_MODEL,
+    MOONDREAM_IMAGE_SELECTION_FIRST,
+    MOONDREAM_IMAGE_SELECTION_LAST,
+    MOONDREAM_IMAGE_SELECTION_BEST,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,6 +61,7 @@ class Request:
         self.temperature = temperature
         self.base64_images = []
         self.filenames = []
+        self.ssim_scores = []  # Add SSIM scores for better image selection
 
     @staticmethod
     def sanitize_data(data):
@@ -98,28 +87,29 @@ class Request:
         if not entry_data:
             return None
 
-        if CONF_ANTHROPIC_API_KEY in entry_data:
-            return "Anthropic"
-        elif CONF_AZURE_API_KEY in entry_data:
-            return "Azure"
-        elif CONF_CUSTOM_OPENAI_API_KEY in entry_data:
-            return "Custom OpenAI"
-        elif CONF_GOOGLE_API_KEY in entry_data:
-            return "Google"
-        elif CONF_GROQ_API_KEY in entry_data:
-            return "Groq"
-        elif CONF_LOCALAI_IP_ADDRESS in entry_data:
-            return "LocalAI"
-        elif CONF_OLLAMA_IP_ADDRESS in entry_data:
-            return "Ollama"
-        elif CONF_OPENAI_API_KEY in entry_data:
-            return "OpenAI"
-        elif CONF_AWS_ACCESS_KEY_ID in entry_data:
-            return "AWS Bedrock"
-        elif CONF_OPENWEBUI_API_KEY in entry_data:
-            return "OpenWebUI"
-        else:
-            return None
+        # Check provider field first
+        provider = entry_data.get("provider")
+        if provider:
+            return provider
+            
+        # Fallback to checking specific config fields for older versions
+        if CONF_API_KEY in entry_data:
+            # Check which provider based on other config fields
+            if CONF_AZURE_BASE_URL in entry_data:
+                return "Azure"
+            elif CONF_CUSTOM_OPENAI_ENDPOINT in entry_data:
+                return "Custom OpenAI"
+            elif CONF_AWS_ACCESS_KEY_ID in entry_data:
+                return "AWS Bedrock"
+            elif CONF_MOONDREAM_IMAGE_SELECTION in entry_data:
+                return "Moondream"
+            else:
+                return "OpenAI"  # Default fallback
+        elif "ip_address" in entry_data:
+            if "port" in entry_data:
+                return "LocalAI"  # or "Ollama" - would need more logic to distinguish
+        
+        return None
     
     @staticmethod
     def _get_default_model(provider):
@@ -140,10 +130,12 @@ class Request:
             return DEFAULT_OLLAMA_MODEL
         elif provider == "Custom OpenAI":
             return DEFAULT_CUSTOM_OPENAI_MODEL
-        elif provider == "AWS":
+        elif provider == "AWS Bedrock":
             return DEFAULT_AWS_MODEL
-        elif provider == "Open WebUI":
+        elif provider == "OpenWebUI":
             return DEFAULT_OPENWEBUI_MODEL
+        elif provider == "Moondream":
+            return DEFAULT_MOONDREAM_MODEL
         else:
             return
 
@@ -159,9 +151,18 @@ class Request:
         # Check image input
         if not call.base64_images:
             raise ServiceValidationError(ERROR_NO_IMAGE_INPUT)
+        
+        provider = self.get_provider(self.hass, call.provider)
+        
         # Check if single image is provided for Groq
-        if len(call.base64_images) > 1 and self.get_provider(self.hass, call.provider) == 'Groq':
+        if len(call.base64_images) > 1 and provider == 'Groq':
             raise ServiceValidationError(ERROR_GROQ_MULTIPLE_IMAGES)
+            
+        # Check if multiple images provided for Moondream
+        if len(call.base64_images) > 1 and provider == 'Moondream':
+            # Don't raise error, just log that we'll select one image
+            _LOGGER.info(f"Moondream only supports one image per call. Will select image based on configuration.")
+        
         # Check provider is configured
         if not call.provider:
             raise ServiceValidationError(ERROR_NOT_CONFIGURED)
@@ -185,16 +186,17 @@ class Request:
         provider = Request.get_provider(self.hass, entry_id)
         call.base64_images = self.base64_images
         call.filenames = self.filenames
+        call.ssim_scores = self.ssim_scores  # Pass SSIM scores to call
 
         self.validate(call)
 
         if provider == 'OpenAI':
-            api_key = config.get(CONF_OPENAI_API_KEY)
+            api_key = config.get(CONF_API_KEY)
             provider_instance = OpenAI(
                 hass=self.hass, api_key=api_key, model=call.model)
 
         elif provider == 'Azure':
-            api_key = config.get(CONF_AZURE_API_KEY)
+            api_key = config.get(CONF_API_KEY)
             endpoint = config.get(CONF_AZURE_BASE_URL)
             deployment = config.get(CONF_AZURE_DEPLOYMENT)
             version = config.get(CONF_AZURE_VERSION)
@@ -210,24 +212,22 @@ class Request:
                                             model=call.model)
 
         elif provider == 'Anthropic':
-            api_key = config.get(CONF_ANTHROPIC_API_KEY)
+            api_key = config.get(CONF_API_KEY)
             provider_instance = Anthropic(self.hass, api_key=api_key, model=call.model)
 
         elif provider == 'Google':
-            api_key = config.get(CONF_GOOGLE_API_KEY)
-            model = call.model if call.model and call.model != "None" else CONF_GOOGLE_DEFAULT_MODEL
-
+            api_key = config.get(CONF_API_KEY)
             provider_instance = Google(self.hass, api_key=api_key, endpoint={
                                        'base_url': ENDPOINT_GOOGLE, 'model': call.model})
 
         elif provider == 'Groq':
-            api_key = config.get(CONF_GROQ_API_KEY)
+            api_key = config.get(CONF_API_KEY)
             provider_instance = Groq(self.hass, api_key=api_key, model=call.model)
 
         elif provider == 'LocalAI':
-            ip_address = config.get(CONF_LOCALAI_IP_ADDRESS)
-            port = config.get(CONF_LOCALAI_PORT)
-            https = config.get(CONF_LOCALAI_HTTPS, False)
+            ip_address = config.get('ip_address')
+            port = config.get('port')
+            https = config.get('https', False)
 
             provider_instance = LocalAI(self.hass, endpoint={
                 'ip_address': ip_address,
@@ -237,9 +237,9 @@ class Request:
                 model=call.model)
 
         elif provider == 'Ollama':
-            ip_address = config.get(CONF_OLLAMA_IP_ADDRESS)
-            port = config.get(CONF_OLLAMA_PORT)
-            https = config.get(CONF_OLLAMA_HTTPS, False)
+            ip_address = config.get('ip_address')
+            port = config.get('port')
+            https = config.get('https', False)
 
             provider_instance = Ollama(self.hass, endpoint={
                 'ip_address': ip_address,
@@ -249,9 +249,8 @@ class Request:
             model=call.model)
 
         elif provider == 'Custom OpenAI':
-            api_key = config.get(CONF_CUSTOM_OPENAI_API_KEY)
-            endpoint = config.get(
-                CONF_CUSTOM_OPENAI_ENDPOINT)
+            api_key = config.get(CONF_API_KEY)
+            endpoint = config.get(CONF_CUSTOM_OPENAI_ENDPOINT)
             provider_instance = OpenAI(
                 self.hass, api_key=api_key, endpoint={'base_url': endpoint}, model=call.model)
 
@@ -267,10 +266,10 @@ class Request:
                                            )
 
         elif provider == 'OpenWebUI':
-            ip_address = config.get(CONF_OPENWEBUI_IP_ADDRESS)
-            port = config.get(CONF_OPENWEBUI_PORT)
-            https = config.get(CONF_OPENWEBUI_HTTPS, False)
-            api_key = config.get(CONF_OPENWEBUI_API_KEY)
+            ip_address = config.get('ip_address')
+            port = config.get('port')
+            https = config.get('https', False)
+            api_key = config.get(CONF_API_KEY)
 
             endpoint = ENDPOINT_OPENWEBUI.format(
                 ip_address=ip_address,
@@ -280,6 +279,11 @@ class Request:
 
             provider_instance = OpenAI(
                 self.hass, api_key=api_key, endpoint={'base_url': endpoint}, model=call.model)
+
+        elif provider == 'Moondream':
+            api_key = config.get(CONF_API_KEY)
+            image_selection = config.get(CONF_MOONDREAM_IMAGE_SELECTION, MOONDREAM_IMAGE_SELECTION_FIRST)
+            provider_instance = Moondream(self.hass, api_key=api_key, model=call.model, image_selection=image_selection)
 
         else:
             raise ServiceValidationError("invalid_provider")
@@ -296,9 +300,10 @@ class Request:
         else:
             return {"response_text": response_text}
 
-    def add_frame(self, base64_image, filename):
+    def add_frame(self, base64_image, filename, ssim_score=0.0):
         self.base64_images.append(base64_image)
         self.filenames.append(filename)
+        self.ssim_scores.append(ssim_score)
 
     async def _resolve_error(self, response, provider):
         """Translate response status to error message"""
@@ -312,6 +317,9 @@ class Request:
                 error_message = f"{error_info.get('type', 'Unknown error')}: {error_info.get('message', 'Unknown error')}"
             elif provider == 'ollama':
                 error_message = response_json.get('error', 'Unknown error')
+            elif provider == 'moondream':
+                error_info = response_json.get('error', {})
+                error_message = error_info.get('message', 'Unknown error')
             else:
                 error_info = response_json.get('error', {})
                 error_message = error_info.get('message', 'Unknown error')
@@ -408,6 +416,9 @@ class Provider(ABC):
                 error_message = f"{error_info.get('type', 'Unknown error')}: {error_info.get('message', 'Unknown error')}"
             elif provider == 'ollama':
                 error_message = response_json.get('error', 'Unknown error')
+            elif provider == 'moondream':
+                error_info = response_json.get('error', {})
+                error_message = error_info.get('message', 'Unknown error')
             else:
                 error_info = response_json.get('error', {})
                 error_message = error_info.get('message', 'Unknown error')
@@ -415,6 +426,96 @@ class Provider(ABC):
             error_message = 'Unknown error'
 
         return error_message
+
+
+class Moondream(Provider):
+    def __init__(self, hass, api_key, model=DEFAULT_MOONDREAM_MODEL, image_selection=MOONDREAM_IMAGE_SELECTION_FIRST):
+        super().__init__(hass, api_key, model)
+        self.image_selection = image_selection
+
+    def _generate_headers(self) -> dict:
+        return {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {self.api_key}'
+        }
+
+    def _select_image(self, call):
+        """Select which image to send based on configuration"""
+        if len(call.base64_images) == 1:
+            return call.base64_images[0], call.filenames[0] if call.filenames else ""
+        
+        if self.image_selection == MOONDREAM_IMAGE_SELECTION_FIRST:
+            return call.base64_images[0], call.filenames[0] if call.filenames else ""
+        elif self.image_selection == MOONDREAM_IMAGE_SELECTION_LAST:
+            return call.base64_images[-1], call.filenames[-1] if call.filenames else ""
+        elif self.image_selection == MOONDREAM_IMAGE_SELECTION_BEST:
+            # For "best" image, find the one with lowest SSIM score (most different/interesting)
+            if hasattr(call, 'ssim_scores') and call.ssim_scores:
+                best_index = call.ssim_scores.index(min(call.ssim_scores))
+                return call.base64_images[best_index], call.filenames[best_index] if call.filenames else ""
+            else:
+                # Fallback to first image if no SSIM scores available
+                _LOGGER.warning("SSIM scores not available for best image selection, using first image")
+                return call.base64_images[0], call.filenames[0] if call.filenames else ""
+        else:
+            return call.base64_images[0], call.filenames[0] if call.filenames else ""
+
+    async def _make_request(self, data) -> str:
+        headers = self._generate_headers()
+        response = await self._post(url=ENDPOINT_MOONDREAM, headers=headers, data=data)
+        response_text = response.get("answer", "")
+        return response_text
+
+    def _prepare_vision_data(self, call) -> dict:
+        # Select single image based on configuration
+        selected_image, selected_filename = self._select_image(call)
+        
+        # Moondream expects the image as a data URI
+        image_url = f"data:image/jpeg;base64,{selected_image}"
+        
+        payload = {
+            "image_url": image_url,
+            "question": call.message,
+            "stream": False
+        }
+
+        if call.use_memory and hasattr(call, 'memory'):
+            # Add system prompt to the question if memory is used
+            system_prompt = call.memory.system_prompt
+            if system_prompt:
+                payload["question"] = f"{system_prompt}\n\n{call.message}"
+
+        return payload
+
+    def _prepare_text_data(self, call) -> dict:
+        # For text-only requests (like title generation), we still need an image
+        # Use the first available image or a placeholder
+        if call.base64_images:
+            selected_image, _ = self._select_image(call)
+            image_url = f"data:image/jpeg;base64,{selected_image}"
+        else:
+            # This shouldn't happen for Moondream, but just in case
+            raise ServiceValidationError("Moondream requires an image for all requests")
+        
+        return {
+            "image_url": image_url,
+            "question": call.message,
+            "stream": False
+        }
+
+    async def validate(self) -> None | ServiceValidationError:
+        if not self.api_key:
+            raise ServiceValidationError("empty_api_key")
+
+        headers = self._generate_headers()
+        # Simple validation payload - create a small test image
+        test_image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        data = {
+            "image_url": f"data:image/png;base64,{test_image}",
+            "question": "Test",
+            "stream": False
+        }
+        await self._post(url=ENDPOINT_MOONDREAM, headers=headers, data=data)
 
 
 class OpenAI(Provider):
@@ -479,7 +580,7 @@ class OpenAI(Provider):
         if self.api_key:
             headers = self._generate_headers()
             data = {
-                "model": self.default_model,
+                "model": self.model,
                 "messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}],
                 "max_tokens": 1,
                 "temperature": 0.5
@@ -634,7 +735,7 @@ class Anthropic(Provider):
 
 
 class Google(Provider):
-    def __init__(self, hass, api_key="", endpoint={'base_url': ENDPOINT_GOOGLE, 'model': CONF_GOOGLE_DEFAULT_MODEL}):
+    def __init__(self, hass, api_key="", endpoint={'base_url': ENDPOINT_GOOGLE, 'model': DEFAULT_GOOGLE_MODEL}):
         super().__init__(hass, api_key, endpoint)
         self.default_model = endpoint['model']
 
@@ -761,7 +862,7 @@ class Groq(Provider):
 
 
 class LocalAI(Provider):
-    def __init__(self, hass, api_key, model, endpoint={'ip_address': "", 'port': "", 'https': False}):
+    def __init__(self, hass, api_key="", model="", endpoint={'ip_address': "", 'port': "", 'https': False}):
         super().__init__(hass, api_key, model, endpoint)
 
     async def _make_request(self, data) -> str:
@@ -828,7 +929,7 @@ class LocalAI(Provider):
 
 
 class Ollama(Provider):
-    def __init__(self, hass, api_key, model, endpoint={'ip_address': "0.0.0.0", 'port': "11434", 'https': False}):
+    def __init__(self, hass, api_key="", model="", endpoint={'ip_address': "0.0.0.0", 'port': "11434", 'https': False}):
         super().__init__(hass, api_key, model, endpoint)
 
     async def _make_request(self, data) -> str:
